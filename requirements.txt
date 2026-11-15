@@ -10,9 +10,8 @@ pydantic-settings #needed by fast api for settings management
 boto3 #aws service management (s3 document storage)
 psycopg[binary,pool] #postgresql adapter with binary and connection pooling
 
-#mistral ai (embeddings & llm)
-langchain-mistralai #chatmistralai (mistral-small/large) & mistralaiembeddings (mistral-embed)
-mistralai #mistral python sdk
+#google genai (llm & embeddings)
+google-genai
 
 #rag development
 pypdf #required by rag
