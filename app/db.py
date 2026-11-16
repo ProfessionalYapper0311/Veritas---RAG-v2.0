@@ -11,7 +11,7 @@ def get_db_connection():
     url = getattr(settings, 'database_url', None) or getattr(settings, 'postgres_database_url', None)
     if not url:
         raise RuntimeError("DATABASE_url is missing from .env")
-    with psycopg.connect(url, row_factory=dict_row, connect_timeout=10) as conn:
+    with psycopg.connect(url, row_factory=dict_row, connect_timeout=25) as conn:
         yield conn
 
 def audit(conn, actor, tenant, action, detail): #function to audit database changes
