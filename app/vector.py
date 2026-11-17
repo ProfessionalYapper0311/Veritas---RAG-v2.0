@@ -2,6 +2,7 @@ import logging
 import time
 from functools import lru_cache
 from pinecone import Pinecone, ServerlessSpec
+from pinecone.errors.exceptions import NotFoundError
 
 from app.config import get_settings
 from app.observability import trace
@@ -32,7 +33,12 @@ def index():
         info = pc.describe_index(name)
     except Exception as exc:
         # Only create on an actual 404; never hide auth/network failures.
-        if getattr(exc, 'status', None) != 404:
+        is_404 = (
+            isinstance(exc, NotFoundError)
+            or getattr(exc, 'status_code', None) == 404
+            or getattr(exc, 'status', None) == 404
+        )
+        if not is_404:
             raise
         log.info('Creating Pinecone index %s (dimension=%d, metric=cosine)', name, s.embed_dim)
         try:
@@ -44,7 +50,12 @@ def index():
             )
         except Exception as create_exc:
             # Another process may have created the index concurrently.
-            if getattr(create_exc, 'status', None) != 409:
+            is_409 = (
+                getattr(create_exc, 'status_code', None) == 409
+                or getattr(create_exc, 'status', None) == 409
+                or create_exc.__class__.__name__ == 'ConflictError'
+            )
+            if not is_409:
                 raise
         info = pc.describe_index(name)
 
@@ -104,9 +115,40 @@ def search(tenant: str, vector: list[float], groups: list | set, owner: str, lim
     ]
 
 
+def delete_all_vectors(tenant: str):
+    """Purge all vectors in the tenant's Pinecone namespace."""
+    try:
+        index().delete(delete_all=True, namespace=namespace(tenant))
+        log.info("Deleted all vectors in namespace %s", namespace(tenant))
+    except Exception as exc:
+        if isinstance(exc, NotFoundError) or getattr(exc, 'status_code', None) == 404 or '404' in str(exc) or 'not found' in str(exc).lower():
+            log.info("Namespace %s already empty or not found in Pinecone", namespace(tenant))
+            return
+        log.error("Failed to delete all vectors in namespace %s: %s", namespace(tenant), exc)
+        raise
+
+
+def delete_document_vectors(tenant: str, doc_id: str):
+    """Delete all vector chunks for a specific document ID in the tenant namespace."""
+    try:
+        index().delete(filter={'document_id': str(doc_id)}, namespace=namespace(tenant))
+        log.info("Deleted vector chunks for document %s in namespace %s", doc_id, namespace(tenant))
+    except Exception as exc:
+        if isinstance(exc, NotFoundError) or getattr(exc, 'status_code', None) == 404 or '404' in str(exc) or 'not found' in str(exc).lower():
+            log.info("No vectors found for document %s in namespace %s", doc_id, namespace(tenant))
+            return
+        log.error("Failed to delete vectors for document %s: %s", doc_id, exc)
+        raise
+
+
 def delete_document(tenant: str, ids: str | list[str]):
     """Delete document vector IDs from tenant namespace safely."""
     if not ids:
         return
     id_list = [ids] if isinstance(ids, str) else list(ids)
-    index().delete(ids=id_list, namespace=namespace(tenant))
+    try:
+        index().delete(ids=id_list, namespace=namespace(tenant))
+    except Exception as exc:
+        if isinstance(exc, NotFoundError) or getattr(exc, 'status_code', None) == 404 or '404' in str(exc) or 'not found' in str(exc).lower():
+            return
+        raise

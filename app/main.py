@@ -16,6 +16,11 @@ from app.aws import client
 from app.guardrails import check_input, classify_input
 from app.rag import chat
 from app.memory import history, save_turn, list_messages
+from app.deletion import (
+    delete_all_tenant_documents,
+    delete_single_document,
+    resolve_and_execute_approval_action,
+)
 
 from worker.ingest import process_s3_key
 
@@ -111,6 +116,23 @@ def documents(p:Principle=Depends(principle)):
     return {"documents" : rows} 
 
 
+@app.delete("/api/documents/{document_id}")
+def delete_document_endpoint(document_id:uuid.UUID, p:Principle=Depends(principle)):
+    if not p.admin:
+        raise HTTPException(403, 'Admin privileges required to delete documents.')
+    result = delete_single_document(p.tenant, document_id, p.subject)
+    if not result.get('found'):
+        raise HTTPException(404, 'Document not found.')
+    return result
+
+
+@app.delete("/api/documents")
+def delete_all_documents_endpoint(p:Principle=Depends(principle)):
+    if not p.admin:
+        raise HTTPException(403, 'Admin privileges required to purge all documents.')
+    return delete_all_tenant_documents(p.tenant, p.subject) 
+
+
 #build the chat api
 #input-giardrail- update
 #start chat- update memory
@@ -174,11 +196,23 @@ def list_approvals(p:Principle=Depends(principle)):
 def decide(approval_id:uuid.UUID,body:ApprovalDecision,p:Principle=Depends(principle)):
     if not p.admin: raise HTTPException(403,'Admin only')
     with get_db_connection() as conn:
-        row=conn.execute("UPDATE approvals SET status=%s,reviewer=%s,reviewed_at=now() WHERE id=%s AND tenant_id=%s AND status='pending' RETURNING id",('approved' if body.approve else 'rejected',p.subject,approval_id,p.tenant)).fetchone()
+        row=conn.execute(
+            "UPDATE approvals SET status=%s,reviewer=%s,reviewed_at=now() WHERE id=%s AND tenant_id=%s AND status='pending' RETURNING id, question, requester",
+            ('approved' if body.approve else 'rejected',p.subject,approval_id,p.tenant)
+        ).fetchone()
         if not row: raise HTTPException(404,'Pending approval not found')
         audit(conn,p.subject,p.tenant,'approval_decided',{'id':str(approval_id),'approved':body.approve})
-    # Approval is a decision record only; it never automatically executes a destructive action.
-    return {'status':'approved' if body.approve else 'rejected','executed':False}
+
+    execution = {'executed': False, 'action': None, 'detail': {}}
+    if body.approve:
+        execution = resolve_and_execute_approval_action(approval_id, row['question'], p.tenant, p.subject)
+
+    return {
+        'status': 'approved' if body.approve else 'rejected',
+        'executed': execution.get('executed', False),
+        'action': execution.get('action'),
+        'detail': execution.get('detail')
+    }
 
 @app.get("/api/admin/guardrails")
 def guardrail_metrics(p:Principle=Depends(principle)):

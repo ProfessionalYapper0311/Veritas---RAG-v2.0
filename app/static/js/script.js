@@ -1100,8 +1100,17 @@
       `Are you sure you want to ${verb} this requested operation?`,
       async () => {
         try {
-          await api.decideApproval(approvalId, approve);
-          showToast(`Approval request ${approve ? 'approved' : 'rejected'}`, 'success');
+          const res = await api.decideApproval(approvalId, approve);
+          if (res.executed && res.action && res.action.startsWith('delete')) {
+            const count = res.detail && res.detail.deleted_documents_count !== undefined
+              ? res.detail.deleted_documents_count
+              : 0;
+            showToast(`Approved & executed: ${count} document(s) permanently removed from database, S3, and Pinecone.`, 'success');
+            loadDocuments();
+            loadAdminDashboard();
+          } else {
+            showToast(`Approval request ${approve ? 'approved' : 'rejected'}`, 'success');
+          }
           loadApprovals();
         } catch (err) {
           showToast(err.message || 'Failed to record decision', 'error');
