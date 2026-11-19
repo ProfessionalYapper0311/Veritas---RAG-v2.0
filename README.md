@@ -26,42 +26,150 @@ Unlike generic chatbots that guess or hallucinate answers, Veritas substantiates
 
 ## High-Level System Architecture
 
-```
-                    ┌──────────────────────────────────────────────┐
-                    │               Web Interface UI               │
-                    │   (Knowledge Chat • Documents • Approvals)   │
-                    └──────────────────────┬───────────────────────┘
-                                           │ HTTPS / REST
-                                           ▼
-                    ┌──────────────────────────────────────────────┐
-                    │             FastAPI Application              │
-                    │  • Input Guardrails (Injection Detection)    │
-                    │  • HITL Approval Interceptor                 │
-                    │  • Multi-Tenant ACL & Session Context        │
-                    └──────┬───────────────┬───────────────┬───────┘
-                           │               │               │
-            Direct Uploads │               │ Citations &   │ Metadata, Memory
-             Presigned URL │               │ Answers       │ & Audit Events
-                           ▼               ▼               ▼
-                    ┌────────────┐   ┌────────────┐   ┌────────────┐
-                    │   AWS S3   │   │  LangGraph │   │ PostgreSQL │
-                    │ Object DB  │   │ RAG Engine │   │  (Render)  │
-                    └─────┬──────┘   └─────┬──────┘   └────────────┘
-                          │                │
-            Chunk & Ingest│                │ Semantic Search &
-            Worker Tasks  │                │ Vector Embeddings
-                          ▼                ▼
-                    ┌─────────────────────────────┐
-                    │      Google Gemini AI       │
-                    │  • gemini-3.8-flash (Chat)  │
-                    │  • embedding-001 (1024-dim) │
-                    └──────────────┬──────────────┘
-                                   │ Upsert / Query
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │     Pinecone Serverless     │
-                    │   (Isolated Tenant Space)   │
-                    └─────────────────────────────┘
+The following interactive flowchart illustrates the end-to-end architecture of Veritas RAG v2.0 &mdash; including browser direct-to-S3 uploads, deterministic security guardrails, the LangGraph agent state machine, Google Gemini AI integration, multi-tier storage, and automated human-in-the-loop (HITL) purge execution:
+
+```mermaid
+flowchart TD
+    %% ==========================================
+    %% SUBGRAPHS / LOGICAL TIERS
+    %% ==========================================
+
+    subgraph CLIENT["Client Presentation Tier (Browser SPA)"]
+        UI_CHAT["Knowledge Chat UI<br/>(Interactive Citation Viewer)"]
+        UI_DOCS["Document Library<br/>(Direct S3 Upload Dropzone)"]
+        UI_APPR["Approvals Desk<br/>(HITL Review & Decision Queue)"]
+        UI_ADMIN["Admin Dashboard<br/>(Telemetry & Health Metrics)"]
+    end
+
+    subgraph GATEWAY["Application & Security Gateway (FastAPI)"]
+        ROUTER["REST API Routing Layer<br/>(/api/chat, /api/documents, /api/approvals)"]
+        AUTH_CTX["Multi-Tenant Context & ACLs<br/>(Tenant ID, User Subject, Group Memberships)"]
+        GUARD_IN{"Deterministic Input Guardrail<br/>(Regex Injection & Override Check)"}
+        HITL_GATE{"HITL Safety Policy Gate<br/>(Destructive Action Detection?)"}
+    end
+
+    subgraph RAG_PIPELINE["LangGraph Agentic RAG State Machine"]
+        NODE_GUARD["Node: guard<br/>(Input Sanitization)"]
+        NODE_RETR["Node: retrieve<br/>(Query Embedding & Vector Search)"]
+        NODE_ROUTE{"Node: route<br/>(Evidence Score Threshold)"}
+        NODE_GEN["Node: generate<br/>(Quarantined Prompt & Answer Synthesis)"]
+        NODE_VAL["Node: validate<br/>(Output Credential & Key Leak Check)"]
+        NODE_NO_EV["Node: no_evidence<br/>(Authorized Fallback Answer)"]
+    end
+
+    subgraph MODELS["AI & Model Layer (Google Gemini)"]
+        GEMINI_EMBED["models/gemini-embedding-001<br/>• 1024-dim Matryoshka Truncation<br/>• Unit L2 Normalization<br/>• Task: RETRIEVAL_QUERY / DOCUMENT"]
+        GEMINI_CHAT["gemini-3.8-flash<br/>• 1M Token Context Window<br/>• Low-Temperature Grounded Generation<br/>• Inline Citation Formatting [1], [2]"]
+    end
+
+    subgraph INGEST_PURGE["Background Processing & Deletion Engines"]
+        WORKER_INGEST["Document Ingestion Worker (worker/ingest.py)<br/>• S3 Read & Text Extraction (PDF / DOCX)<br/>• Text Chunking (1000 char / 180 overlap)<br/>• Gemini Batch Embed & Pinecone Upsert"]
+        PURGE_ENGINE["Multi-Tier Deletion Engine (app/deletion.py)<br/>• Purge Pinecone Namespace (tenant-{id})<br/>• Delete AWS S3 Objects (tenants/{id}/*)<br/>• Remove PostgreSQL Records & Log Audit Event"]
+    end
+
+    subgraph STORAGE["Enterprise Persistence & Storage Tier"]
+        S3_STORE[("AWS S3 Object Bucket<br/>(Source Documents & Presigned URLs)")]
+        PINECONE_STORE[("Pinecone Serverless Vector DB<br/>• 1024-dim Cosine Index<br/>• Namespace Isolation: tenant-{id}")]
+        PG_STORE[("Render Cloud PostgreSQL<br/>• documents & chat_messages<br/>• approvals & audit_events")]
+    end
+
+    subgraph TELEMETRY["Privacy-First Observability"]
+        RIUS["GlassFlow Rius Distributed Tracing<br/>(Zero Payload: Spans, Latency & Error Tracking)"]
+    end
+
+    %% ==========================================
+    %% FLOW RELATIONSHIPS & DATA PATHWAYS
+    %% ==========================================
+
+    %% User Interaction Pathways
+    UI_CHAT -->|"1. User Question Prompt"| ROUTER
+    UI_DOCS -->|"Request Presigned Upload URL"| ROUTER
+    UI_APPR -->|"Submit Approval Decision"| ROUTER
+    UI_ADMIN -->|"Query System Metrics & Events"| ROUTER
+
+    ROUTER --> AUTH_CTX
+    AUTH_CTX --> GUARD_IN
+
+    %% Input Guardrail Checks
+    GUARD_IN -->|"Attack Detected (400 Blocked)"| UI_CHAT
+    GUARD_IN -->|"Clean Prompt"| HITL_GATE
+
+    %% HITL Guardrail Routing
+    HITL_GATE -->|"Destructive Action Detected ('delete all')"| PG_STORE
+    HITL_GATE -->|"Grounded Q&A Query"| NODE_GUARD
+
+    %% Direct S3 Upload & Ingestion Pathway
+    ROUTER -.->|"Return Presigned PUT URL"| UI_DOCS
+    UI_DOCS ==>|"Direct Binary PUT (Bypasses Web Server)"| S3_STORE
+    UI_DOCS -->|"Notify Complete (/api/documents/complete)"| WORKER_INGEST
+    WORKER_INGEST ==>|"Fetch Document Content"| S3_STORE
+    WORKER_INGEST -->|"Batch Embed Text Chunks"| GEMINI_EMBED
+    WORKER_INGEST ==>|"Upsert Vectors & ACL Metadata"| PINECONE_STORE
+    WORKER_INGEST -->|"Update Status: ready"| PG_STORE
+
+    %% LangGraph Query & Retrieval Pathway
+    NODE_GUARD --> NODE_RETR
+    NODE_RETR -->|"Generate Query Vector"| GEMINI_EMBED
+    NODE_RETR ==>|"Cosine Search in Tenant Namespace"| PINECONE_STORE
+    NODE_RETR --> NODE_ROUTE
+
+    NODE_ROUTE -->|"Evidence >= Min Relevance"| NODE_GEN
+    NODE_ROUTE -->|"No Passages / Score Below Threshold"| NODE_NO_EV
+
+    NODE_GEN -->|"Context-Quarantined Evidence"| GEMINI_CHAT
+    GEMINI_CHAT -->|"Synthesized Answer"| NODE_VAL
+    NODE_VAL -->|"Clean Response (200 OK)"| UI_CHAT
+    NODE_VAL -->|"Credential Leak Detected (Redacted)"| UI_CHAT
+    NODE_NO_EV -->|"Safe No-Evidence Notice"| UI_CHAT
+
+    %% Session Memory
+    ROUTER <-->|"Persist & Retrieve Multi-Turn History"| PG_STORE
+
+    %% HITL Execution Pathway
+    UI_APPR -->|"POST /api/approvals/{id}/decision (approve: true)"| PURGE_ENGINE
+    PURGE_ENGINE ==>|"1. Purge Vector Namespace"| PINECONE_STORE
+    PURGE_ENGINE ==>|"2. Batch Delete S3 Keys"| S3_STORE
+    PURGE_ENGINE ==>|"3. Delete Database Records & Audit"| PG_STORE
+    PURGE_ENGINE -->|"Refresh Status & Confirmation Toast"| UI_APPR
+
+    %% Observability Spans
+    RAG_PIPELINE -.->|"Execution Latency & Spans"| RIUS
+    WORKER_INGEST -.->|"Ingestion Spans"| RIUS
+    PURGE_ENGINE -.->|"Purge Spans"| RIUS
+
+    %% ==========================================
+    %% COLOR SCHEMES & STYLES
+    %% ==========================================
+    classDef clientClass fill:#171f2b,stroke:#2a8f82,stroke-width:2px,color:#e8ecf1;
+    classDef gatewayClass fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
+    classDef graphClass fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#f1f5f9;
+    classDef modelClass fill:#1e1e38,stroke:#8b5cf6,stroke-width:2px,color:#ede9fe;
+    classDef workerClass fill:#2d2013,stroke:#f59e0b,stroke-width:2px,color:#fef3c7;
+    classDef storageClass fill:#142828,stroke:#06b6d4,stroke-width:2px,color:#ecfeff;
+    classDef telemetryClass fill:#261828,stroke:#ec4899,stroke-width:2px,color:#fdf2f8;
+
+    class UI_CHAT,UI_DOCS,UI_APPR,UI_ADMIN clientClass;
+    class ROUTER,AUTH_CTX,GUARD_IN,HITL_GATE gatewayClass;
+    class NODE_GUARD,NODE_RETR,NODE_ROUTE,NODE_GEN,NODE_VAL,NODE_NO_EV graphClass;
+    class GEMINI_EMBED,GEMINI_CHAT modelClass;
+    class WORKER_INGEST,PURGE_ENGINE workerClass;
+    class S3_STORE,PINECONE_STORE,PG_STORE storageClass;
+    class RIUS telemetryClass;
+
+    %% Interactive Tooltips
+    click UI_CHAT "Knowledge chat interface with grounded citations"
+    click UI_DOCS "Drag-and-drop document upload interface"
+    click UI_APPR "Human-in-the-Loop review desk for sensitive operations"
+    click GUARD_IN "Deterministic regex filters blocking prompt injection and instruction disclosure"
+    click HITL_GATE "Policy gate intercepting destructive commands like document deletion"
+    click NODE_RETR "Retrieval node querying Pinecone with tenant and group ACL filtering"
+    click GEMINI_EMBED "Google Gemini Embedding 001 (1024-dim MRL representation)"
+    click GEMINI_CHAT "Google Gemini 3.8 Flash model with grounded context boundary"
+    click S3_STORE "AWS S3 object store for binary files and presigned URLs"
+    click PINECONE_STORE "Pinecone Serverless vector database with isolated tenant namespaces"
+    click PG_STORE "Render Cloud PostgreSQL for metadata, short-term memory, and audit trails"
+    click PURGE_ENGINE "Automated synchronized multi-tier deletion engine (app/deletion.py)"
+    click RIUS "Privacy-first distributed tracing telemetry (app/observability.py)"
 ```
 
 ### The LangGraph Agent Pipeline
