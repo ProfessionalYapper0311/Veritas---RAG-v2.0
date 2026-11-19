@@ -1,0 +1,38 @@
+# Environment files and secrets (never bake into images)
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+
+# Git metadata
+.git/
+.github/
+.gitignore
+
+# Editor configurations
+.vscode/
+.idea/
+
+# Local test suites, documentation, and mock data
+tests/
+docs/
+test_docs/
+discard/
+*.md
+graph.png
+
+# Docker files
+Dockerfile*
+.dockerignore
