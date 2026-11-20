@@ -59,7 +59,7 @@ def embed(text: str, task_type: str = "RETRIEVAL_QUERY", title: str | None = Non
     return normalize_l2(raw_vector)
 
 
-# Chat operation with gemini-3.8-flash (1M token context, native system instruction)
+# Chat operation with resilient model fallback (handles 503 high-demand spikes)
 @trace("answer")
 def answer(question: str, evidence: str, history: list = None) -> str:
     s = get_settings()
@@ -88,10 +88,24 @@ def answer(question: str, evidence: str, history: list = None) -> str:
         max_output_tokens=750
     )
 
-    response = gemini_client().models.generate_content(
-        model=s.gemini_chat_model,
-        contents=prompt,
-        config=config
-    )
+    # Resilient fallback chain to prevent 503 UNAVAILABLE crashes during upstream Google demand spikes
+    candidate_models = [s.gemini_chat_model, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash"]
+    seen = set()
+    models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
-    return response.text or ''
+    client = gemini_client()
+    for model_name in models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=config
+            )
+            if response and response.text:
+                return response.text
+        except Exception as exc:
+            import logging
+            logging.warning("Gemini chat model %s unavailable: %s; trying fallback model...", model_name, exc)
+            continue
+
+    return "I am currently unable to generate an authorized response due to high demand on the AI service. Please try your request again shortly."

@@ -50,9 +50,9 @@ def test_gemini_embedding():
 
 
 def test_gemini_llm():
-    """Verify gemini-3.8-flash generation works with tool/JSON support readiness."""
+    """Verify Gemini generation works with tool/JSON support readiness."""
     client = get_client()
-    chat_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
+    chat_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.5-flash-lite")
 
     config = types.GenerateContentConfig(
         temperature=0.1,

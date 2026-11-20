@@ -61,7 +61,14 @@ def no_evidence(s):
 @trace("generate")
 def generate(s):
     evidence='\n\n'.join(f'[{i+1}] {h["metadata"].get("title", "Document")}, page {h["metadata"].get("page",1)}: {h["metadata"].get("text", "")}' for i,h in enumerate(s['passages']))
-    return {'answer': answer(s['question'],evidence,s.get('history', [])), 'status':'answered'}
+    try:
+        ans = answer(s['question'], evidence, s.get('history', []))
+        return {'answer': ans, 'status': 'answered'}
+    except Exception as exc:
+        return {
+            'answer': "I am temporarily unable to retrieve an answer due to high demand on the knowledge service. Please try again in a moment.",
+            'status': 'service_unavailable'
+        }
 
 
 @trace("validate")

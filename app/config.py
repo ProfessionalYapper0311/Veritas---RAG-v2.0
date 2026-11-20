@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Google Gemini Models
     gemini_api_key: str = ""
     gemini_embed_model: str = "models/gemini-embedding-001"
-    gemini_chat_model: str = "gemini-3.8-flash"
+    gemini_chat_model: str = "gemini-3.5-flash-lite"
     embed_dimension: int = 1024
 
     # Alias for app/vector.py compatibility

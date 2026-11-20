@@ -150,9 +150,22 @@ def ask(body:Ask,p:Principle=Depends(principle)):
             audit(conn,p.subject,p.tenant,'approval_requested',{'id':str(row['id'])})
         return {'answer':'This request requires administrator approval before any action. Open the Approvals tab to review it.','sources':[],'status':'pending_approval','approval_id':str(row['id'])}
     conversation_id=body.conversation_id or uuid.uuid4()
-    prior=history(p.tenant,conversation_id)
-    result=chat(p,body.question,prior)
-    save_turn(p.tenant,conversation_id,body.question,result['answer'])
+    try:
+        prior=history(p.tenant,conversation_id)
+    except Exception:
+        prior=[]
+    try:
+        result=chat(p,body.question,prior)
+    except Exception as exc:
+        result={
+            'answer': 'The assistant is temporarily unavailable due to upstream service demand. Please try again in a few moments.',
+            'sources': [],
+            'status': 'error'
+        }
+    try:
+        save_turn(p.tenant,conversation_id,body.question,result['answer'])
+    except Exception:
+        pass
     if result.get('status') == 'blocked' or result.get('answer') == "I can't share that information.":
         with get_db_connection() as conn:
             audit(conn,p.subject,p.tenant,'guardrail_output_blocked',{'conversation_id':str(conversation_id)})
